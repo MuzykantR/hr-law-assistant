@@ -2,6 +2,7 @@
 
 from rag.corpus import Chunk, chunk_article, group_parts, load_chunks
 from rag.layout import LayoutFixer, vocabulary_from_texts
+from rag.spelling import SpellingFixer
 from rag.retrieval import BM25Retriever, rrf
 from rag.text import tokenize
 
@@ -66,3 +67,19 @@ def test_layout_fixer_uses_query_context_for_short_and_unknown_words():
     fixer = _fixer()
     assert fixer.fix("Crjkmrj xfcjd d ytltk. z ljk;ty hf,jnfnm&") == "Сколько часов в неделю я должен работать?"
     assert fixer.fix("Rfr xfcnj dslfdfnm pfhgkfne&") == "Как часто выдавать зарплату?"
+
+
+def _spelling() -> SpellingFixer:
+    return SpellingFixer([c.text for c in load_chunks()])
+
+
+def test_spelling_fixer_repairs_typos():
+    fixer = _spelling()
+    assert fixer.fix("Мжоно ли разбить отупск на нескалько кусков?") == "Можно ли разбить отпуск на несколько кусков?"
+    assert fixer.fix("Как часто работодатель обязон выдавать зарплату?") == "Как часто работодатель обязан выдавать зарплату?"
+
+
+def test_spelling_fixer_keeps_real_words_missing_from_the_code():
+    # "положено" and "зарплату" never occur in the Labour Code in these forms but are correct Russian words
+    question = "Что мне положено, если зарплату выплатили с опозданием?"
+    assert _spelling().fix(question) == question
