@@ -41,9 +41,17 @@ class DenseRetriever:
     def __init__(self, chunks: list[Chunk], model: str = llm.EMBED_MODEL):
         self.model = model
         self.matrix = load_or_build_embeddings(chunks, model)
+        self.query_cache = QueryEmbeddingCache(CACHE_DIR / f"queries_{model.split('/')[-1]}.npz")
+
+    def embed_query(self, query: str) -> np.ndarray:
+        q = self.query_cache.get(query)
+        if q is None:
+            q = llm.embed([query], self.model)[0]
+            self.query_cache.put(query, q)
+        return q
 
     def search(self, query: str, k: int = 5) -> list[tuple[int, float]]:
-        q = llm.embed([query], self.model)[0]
+        q = self.embed_query(query)
         sims = self.matrix @ q  # vectors are normalized, so dot product == cosine similarity
         top = np.argsort(-sims)[:k]
         return [(int(i), float(sims[i])) for i in top]
@@ -89,3 +97,23 @@ def load_or_build_embeddings(chunks: list[Chunk], model: str) -> np.ndarray:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     np.save(path, matrix)
     return matrix
+
+
+class QueryEmbeddingCache:
+    """Disk cache for question embeddings. Re-running the evaluation (hundreds of questions) would
+    otherwise spend the Gemini free-tier quota again on texts it has already embedded."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.vectors: dict[str, np.ndarray] = {}
+        if path.exists():
+            data = np.load(path)
+            self.vectors = dict(zip(data["texts"].tolist(), data["vectors"]))
+
+    def get(self, text: str) -> np.ndarray | None:
+        return self.vectors.get(text)
+
+    def put(self, text: str, vector: np.ndarray) -> None:
+        self.vectors[text] = vector
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(self.path, texts=np.array(list(self.vectors)), vectors=np.stack(list(self.vectors.values())))
