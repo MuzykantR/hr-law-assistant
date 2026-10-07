@@ -1,10 +1,12 @@
 """Compare BM25, dense and hybrid retrieval on questions with a known correct article.
 
-Three question types, because they stress different parts of the pipeline:
+Question types (data/eval_questions.jsonl), each stresses a different part of the pipeline:
     paraphrase — how an employee actually asks ("можно ли разбить отпуск на куски?")
     terms      — short queries in the law's own words ("оплата сверхурочной работы")
-    layout     — paraphrase questions typed on the English layout ("vj;yj kb hfp,bnm jngecr...");
-                 reported twice: through the layout fixer (as in production) and without it.
+    layout     — paraphrase questions typed on the English layout ("vj;yj kb hfp,bnm jngecr...")
+    typo       — paraphrase questions with typos ("мжоно ли разбить отупск...")
+Noisy types are reported twice: through query normalization (layout + typo fixing, as in production)
+and without it, which shows what the normalization gives.
 
 A hit means a chunk of a correct article is among the top-k results.
     Recall@k — share of questions where the right article is in the top k.
@@ -23,10 +25,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from rag.assistant import build_layout_fixer, build_retriever  # noqa: E402
+from rag.assistant import Assistant, build_layout_fixer, build_retriever, build_spelling_fixer  # noqa: E402
 from rag.corpus import load_chunks  # noqa: E402
 
 MODES = ["bm25", "dense", "hybrid"]
+NOISY = ["layout", "typo"]
 
 
 def first_hit_rank(articles: list[str], expected: set[str]) -> int | None:
@@ -53,44 +56,51 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Eval set references articles absent from the corpus: {sorted(missing)}")
 
-    fixer = build_layout_fixer(chunks)
-    for q in questions:
-        if q["type"] == "layout":
-            print(f"раскладка: {q['question']}  ->  {fixer.fix(q['question'])}")
-    print()
+    normalizer = Assistant(
+        chunks, retriever=None, layout_fixer=build_layout_fixer(chunks), spelling_fixer=build_spelling_fixer(chunks)
+    )
+    normalized = {q["question"]: normalizer.normalize(q["question"]) for q in questions}
+    clean_changed = [
+        q["question"]
+        for q in questions
+        if q["type"] in ("paraphrase", "terms") and normalized[q["question"]] != q["question"]
+    ]
 
-    types = sorted({q["type"] for q in questions}) + ["all"]
+    types = sorted({q["type"] for q in questions}, key=["paraphrase", "terms", *NOISY].index)
+    groups = [*types, "all", *[f"{t} без исправления" for t in NOISY]]
     results: dict[str, dict] = {}
     misses: dict[str, list[str]] = {}
     for mode in MODES:
         retriever = build_retriever(chunks, mode)
-        ranks, raw_layout_ranks, latencies = [], [], []
+        ranks: dict[str, list] = {g: [] for g in groups}
+        latencies = []
         for q in questions:
+            expected = set(q["articles"])
             t = time.perf_counter()
-            hits = retriever.search(fixer.fix(q["question"]), k=10)
+            hits = retriever.search(normalized[q["question"]], k=10)
             latencies.append(time.perf_counter() - t)
-            rank = first_hit_rank([chunks[i].article for i, _ in hits], set(q["articles"]))
-            if q["type"] == "layout":
+            rank = first_hit_rank([chunks[i].article for i, _ in hits], expected)
+            ranks[q["type"]].append(rank)
+            ranks["all"].append(rank)
+            if q["type"] in NOISY:
                 raw_hits = retriever.search(q["question"], k=10)
-                raw_layout_ranks.append(first_hit_rank([chunks[i].article for i, _ in raw_hits], set(q["articles"])))
-            ranks.append(rank)
+                raw_rank = first_hit_rank([chunks[i].article for i, _ in raw_hits], expected)
+                ranks[f"{q['type']} без исправления"].append(raw_rank)
             if rank is None or rank > 5:
                 misses.setdefault(mode, []).append(f"[{q['type']}] {q['question']}")
-        results[mode] = {
-            t: metrics([r for r, q in zip(ranks, questions) if t in ("all", q["type"])]) for t in types
-        }
-        results[mode]["layout без исправления раскладки"] = metrics(raw_layout_ranks)
+        results[mode] = {g: metrics(r) for g, r in ranks.items()}
         results[mode]["latency_ms"] = 1000 * sorted(latencies)[len(latencies) // 2]
 
     lines = []
-    for t in [*types, "layout без исправления раскладки"]:
-        n = results[MODES[0]][t]["n"]
-        lines += [f"**{t}** ({n} вопросов)", "", "| Поиск | Recall@1 | Recall@5 | MRR@10 |", "|---|---|---|---|"]
+    for g in groups:
+        n = results[MODES[0]][g]["n"]
+        lines += [f"**{g}** ({n} вопросов)", "", "| Поиск | Recall@1 | Recall@5 | MRR@10 |", "|---|---|---|---|"]
         for mode in MODES:
-            m = results[mode][t]
+            m = results[mode][g]
             lines.append(f"| {mode} | {m['recall@1']:.2f} | {m['recall@5']:.2f} | {m['mrr@10']:.2f} |")
         lines.append("")
-    lines.append("Медианная задержка поиска: " + ", ".join(f"{m} — {results[m]['latency_ms']:.0f} мс" for m in MODES))
+    lines.append("Медианная задержка поиска (эмбеддинги вопросов, уже бывших в кеше, не запрашиваются по сети): " + ", ".join(f"{m} — {results[m]['latency_ms']:.0f} мс" for m in MODES))
+    lines.append(f"Чистых вопросов, изменённых исправлением запроса: {len(clean_changed)}")
     report = "\n".join(lines)
 
     print(f"{len(questions)} вопросов, {len(chunks)} фрагментов\n")
