@@ -15,7 +15,7 @@ from functools import lru_cache
 
 import numpy as np
 from dotenv import load_dotenv
-from openai import InternalServerError, OpenAI, RateLimitError
+from openai import APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 load_dotenv()
 
@@ -43,7 +43,7 @@ def client() -> OpenAI:
     key = os.getenv(_KEY_VAR)
     if not key:
         raise RuntimeError(f"{_KEY_VAR} is not set — copy .env.example to .env and fill it in")
-    return OpenAI(base_url=BASE_URL, api_key=key, timeout=30, max_retries=1)
+    return OpenAI(base_url=BASE_URL, api_key=key, timeout=60, max_retries=1)
 
 
 def embed(texts: list[str], model: str = EMBED_MODEL, batch_size: int = 64) -> np.ndarray:
@@ -66,8 +66,11 @@ FALLBACK_MODELS = [_PREFIX + m for m in ("gemini-3.1-flash-lite", "gemini-3.6-fl
 
 def chat(messages: list[dict], model: str = LLM_MODEL, temperature: float = 0.1, max_tokens: int = 2000) -> str:
     """Generate an answer. If the model is overloaded (HTTP 503 "high demand", common for new Gemini
-    releases) or its daily free-tier quota is spent (HTTP 429), fall back to the next model —
-    quotas are counted per model — instead of failing the user's request."""
+    releases), too slow (timeout) or its daily free-tier quota is spent (HTTP 429), fall back to the next
+    model — quotas are counted per model — instead of failing the user's request.
+
+    reasoning_effort="low": Gemini 3.x models "think" before answering by default, which on the free tier
+    takes 20–60 s. Answering from a handful of retrieved fragments does not need long reasoning."""
     last_error: Exception | None = None
     for candidate in [model, *[m for m in FALLBACK_MODELS if m != model]]:
         try:
@@ -75,11 +78,15 @@ def chat(messages: list[dict], model: str = LLM_MODEL, temperature: float = 0.1,
             # and rejects the request on a small balance; answers here are a few paragraphs at most.
             resp = _with_rate_limit_retry(
                 lambda: client().chat.completions.create(
-                    model=candidate, messages=messages, temperature=temperature, max_tokens=max_tokens
+                    model=candidate,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reasoning_effort="low",
                 )
             )
             return (resp.choices[0].message.content or "").strip()
-        except (InternalServerError, RateLimitError) as e:
+        except (APITimeoutError, InternalServerError, RateLimitError) as e:
             last_error = e
     raise last_error
 
