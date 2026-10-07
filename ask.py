@@ -19,7 +19,7 @@ def main() -> None:
     assistant = build_assistant(args.mode)
     answer = assistant.ask(args.question)
     if answer.query != args.question:
-        print(f"(исправлена раскладка: «{answer.query}»)\n")
+        print(f"(запрос исправлен: «{answer.query}»)\n")
     print(answer.text)
     if answer.sources:
         print("\nИсточники:")
