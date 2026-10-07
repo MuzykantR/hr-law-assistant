@@ -1,6 +1,7 @@
 """Fast offline tests: no network, no API key."""
 
 from rag.corpus import Chunk, chunk_article, group_parts, load_chunks
+from rag.layout import LayoutFixer, vocabulary_from_texts
 from rag.retrieval import BM25Retriever, rrf
 from rag.text import tokenize
 
@@ -41,3 +42,27 @@ def test_bm25_finds_vacation_article_on_real_corpus():
     chunks = load_chunks()
     hits = BM25Retriever(chunks).search("продолжительность ежегодного основного оплачиваемого отпуска", k=3)
     assert "115" in {chunks[i].article for i, _ in hits}
+
+
+def _fixer() -> LayoutFixer:
+    return LayoutFixer(vocabulary_from_texts([c.text for c in load_chunks()]))
+
+
+def test_layout_fixer_repairs_whole_query_typed_in_english_layout():
+    assert _fixer().fix("crjkmrj lytq jngecrf vyt gjkj;tyj&") == "сколько дней отпуска мне положено?"
+
+
+def test_layout_fixer_repairs_only_wrong_words_in_mixed_query():
+    assert _fixer().fix("сколько дней jngecrf положено?") == "сколько дней отпуска положено?"
+
+
+def test_layout_fixer_keeps_correct_text_and_latin_terms():
+    fixer = _fixer()
+    assert fixer.fix("Можно ли работать удалённо?") == "Можно ли работать удалённо?"
+    assert fixer.fix("Что должен делать HR при увольнении?") == "Что должен делать HR при увольнении?"
+
+
+def test_layout_fixer_uses_query_context_for_short_and_unknown_words():
+    fixer = _fixer()
+    assert fixer.fix("Crjkmrj xfcjd d ytltk. z ljk;ty hf,jnfnm&") == "Сколько часов в неделю я должен работать?"
+    assert fixer.fix("Rfr xfcnj dslfdfnm pfhgkfne&") == "Как часто выдавать зарплату?"

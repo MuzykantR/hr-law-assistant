@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from . import llm
 from .corpus import Chunk, load_chunks
+from .layout import LayoutFixer, vocabulary_from_texts
 from .retrieval import BM25Retriever, DenseRetriever, HybridRetriever, Retriever
 
 NOT_FOUND = "В Трудовом кодексе я не нашёл ответа на этот вопрос."
@@ -22,6 +23,7 @@ SYSTEM_PROMPT = f"""Ты — HR-ассистент, который отвеча�
 class Answer:
     text: str
     sources: list[Chunk]
+    query: str  # the question after layout fixing; differs from the input if it was typed in the wrong layout
 
 
 def build_context(chunks: list[Chunk]) -> str:
@@ -29,25 +31,30 @@ def build_context(chunks: list[Chunk]) -> str:
 
 
 class Assistant:
-    def __init__(self, chunks: list[Chunk], retriever: Retriever, top_k: int = 6):
+    def __init__(self, chunks: list[Chunk], retriever: Retriever, layout_fixer: LayoutFixer | None = None, top_k: int = 6):
         self.chunks = chunks
         self.retriever = retriever
+        self.layout_fixer = layout_fixer
         self.top_k = top_k
+
+    def normalize(self, question: str) -> str:
+        return self.layout_fixer.fix(question) if self.layout_fixer else question
 
     def retrieve(self, question: str) -> list[Chunk]:
         return [self.chunks[i] for i, _ in self.retriever.search(question, self.top_k)]
 
     def ask(self, question: str) -> Answer:
-        sources = self.retrieve(question)
+        query = self.normalize(question)
+        sources = self.retrieve(query)
         if not sources:
-            return Answer(NOT_FOUND, [])
+            return Answer(NOT_FOUND, [], query)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Фрагменты кодекса:\n\n{build_context(sources)}\n\nВопрос: {question}"},
+            {"role": "user", "content": f"Фрагменты кодекса:\n\n{build_context(sources)}\n\nВопрос: {query}"},
         ]
         text = llm.chat(messages)
         # Show sources only if the model actually answered from them.
-        return Answer(text, [] if text.startswith(NOT_FOUND[:20]) else sources)
+        return Answer(text, [] if text.startswith(NOT_FOUND[:20]) else sources, query)
 
 
 def build_retriever(chunks: list[Chunk], mode: str = "hybrid") -> Retriever:
@@ -60,6 +67,10 @@ def build_retriever(chunks: list[Chunk], mode: str = "hybrid") -> Retriever:
     raise ValueError(f"unknown retrieval mode: {mode}")
 
 
+def build_layout_fixer(chunks: list[Chunk]) -> LayoutFixer:
+    return LayoutFixer(vocabulary_from_texts([c.text for c in chunks]))
+
+
 def build_assistant(mode: str = "dense") -> Assistant:
     chunks = load_chunks()
-    return Assistant(chunks, build_retriever(chunks, mode))
+    return Assistant(chunks, build_retriever(chunks, mode), build_layout_fixer(chunks))

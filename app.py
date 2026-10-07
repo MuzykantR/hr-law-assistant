@@ -36,6 +36,8 @@ if question := st.chat_input("Задайте вопрос о трудовых п
     with st.chat_message("assistant"):
         with st.spinner("Ищу в кодексе…"):
             answer = assistant.ask(question)
+        if answer.query != question:
+            st.caption(f"Исправлена раскладка: «{answer.query}»")
         st.markdown(answer.text)
         for c in answer.sources:
             with st.expander(f"[{c.citation}] {c.title}"):
