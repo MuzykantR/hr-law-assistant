@@ -1,0 +1,24 @@
+[project]
+name = "labor-code-rag"
+version = "0.1.0"
+description = "RAG assistant that answers employee questions using the Labour Code of the Russian Federation, with article-level citations"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Rodion Muzykant" }]
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "httpx>=0.27",
+    "numpy>=1.26",
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+    "rank-bm25>=0.2.2",
+    "snowballstemmer>=2.2",
+    "streamlit>=1.38",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

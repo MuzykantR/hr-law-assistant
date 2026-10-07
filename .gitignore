@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+# embedding cache is rebuilt by scripts/build_index.py
+data/cache/
