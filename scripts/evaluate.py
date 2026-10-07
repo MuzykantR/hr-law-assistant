@@ -1,8 +1,10 @@
 """Compare BM25, dense and hybrid retrieval on questions with a known correct article.
 
-Two question types, because they favour different methods:
+Three question types, because they stress different parts of the pipeline:
     paraphrase — how an employee actually asks ("можно ли разбить отпуск на куски?")
     terms      — short queries in the law's own words ("оплата сверхурочной работы")
+    layout     — paraphrase questions typed on the English layout ("vj;yj kb hfp,bnm jngecr...");
+                 reported twice: through the layout fixer (as in production) and without it.
 
 A hit means a chunk of a correct article is among the top-k results.
     Recall@k — share of questions where the right article is in the top k.
@@ -21,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from rag.assistant import build_retriever  # noqa: E402
+from rag.assistant import build_layout_fixer, build_retriever  # noqa: E402
 from rag.corpus import load_chunks  # noqa: E402
 
 MODES = ["bm25", "dense", "hybrid"]
@@ -51,27 +53,37 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Eval set references articles absent from the corpus: {sorted(missing)}")
 
+    fixer = build_layout_fixer(chunks)
+    for q in questions:
+        if q["type"] == "layout":
+            print(f"раскладка: {q['question']}  ->  {fixer.fix(q['question'])}")
+    print()
+
     types = sorted({q["type"] for q in questions}) + ["all"]
     results: dict[str, dict] = {}
     misses: dict[str, list[str]] = {}
     for mode in MODES:
         retriever = build_retriever(chunks, mode)
-        ranks, latencies = [], []
+        ranks, raw_layout_ranks, latencies = [], [], []
         for q in questions:
             t = time.perf_counter()
-            hits = retriever.search(q["question"], k=10)
+            hits = retriever.search(fixer.fix(q["question"]), k=10)
             latencies.append(time.perf_counter() - t)
             rank = first_hit_rank([chunks[i].article for i, _ in hits], set(q["articles"]))
+            if q["type"] == "layout":
+                raw_hits = retriever.search(q["question"], k=10)
+                raw_layout_ranks.append(first_hit_rank([chunks[i].article for i, _ in raw_hits], set(q["articles"])))
             ranks.append(rank)
             if rank is None or rank > 5:
                 misses.setdefault(mode, []).append(f"[{q['type']}] {q['question']}")
         results[mode] = {
             t: metrics([r for r, q in zip(ranks, questions) if t in ("all", q["type"])]) for t in types
         }
+        results[mode]["layout без исправления раскладки"] = metrics(raw_layout_ranks)
         results[mode]["latency_ms"] = 1000 * sorted(latencies)[len(latencies) // 2]
 
     lines = []
-    for t in types:
+    for t in [*types, "layout без исправления раскладки"]:
         n = results[MODES[0]][t]["n"]
         lines += [f"**{t}** ({n} вопросов)", "", "| Поиск | Recall@1 | Recall@5 | MRR@10 |", "|---|---|---|---|"]
         for mode in MODES:
